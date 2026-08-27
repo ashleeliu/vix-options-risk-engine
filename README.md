@@ -1,40 +1,42 @@
-# Vol-Surface-Arbitrage
-In this project, I built a volatility surface analysis tool that extracts implied volatilities from real options data and detects arbitrage violations across strikes and expiries. I ran the analysis on both SPY and VIX options to compare surface behavior across different underlying types.
-The tool pulls live options chain data, computes implied volatilities using Black-Scholes, and systematically checks for calendar and butterfly arbitrage conditions across multiple expiration dates.
+# Options Portfolio Risk & Volatility Modeling Engine
+
+An options analytics and risk engine built around a real, live VIX implied volatility surface: extracts IV from market option prices, fits a parametric smile model, and uses it to price and risk-manage a multi-option portfolio end to end - Greeks, stress scenarios, VaR/ES (historical, analytic, and Monte Carlo), and model backtesting.
+
 ## What It Does
 
-Loads real options contracts across multiple expiries and extracts implied volatilities using Black-Scholes
-Constructs and visualizes a 3D volatility surface across strikes and maturities
-Detects calendar arbitrage and butterfly arbitrage violations in the options market
-Outputs a structured arbitrage report with violation details by strike and expiry
+- Extracts Black-Scholes implied volatility from live VIX option chains and flags static-arbitrage violations (calendar, butterfly)
+- Computes analytical Greeks (delta, gamma, vega, theta, rho), validated against finite differences
+- Prices and risk-aggregates a multi-leg option portfolio
+- Runs spot/vol/rate stress scenarios via full repricing
+- Computes VaR/ES three ways - historical simulation, Monte Carlo full revaluation, and closed-form Delta-Normal/Delta-Gamma - and compares them directly
+- Backtests VaR calibration with the Kupiec proportion-of-failures test
+- Fits an SVI (Stochastic Volatility Inspired) parametric smile to each expiry of live VIX data, with residual/RMSE diagnostics by moneyness and maturity
 
-## Modeling Approach
-Implied volatilities are extracted by numerically inverting the Black-Scholes formula for each contract. Arbitrage detection checks:
+## Key Findings
 
-- Calendar arbitrage: total variance must be non-decreasing across expiries for the same strike
-- Butterfly arbitrage: second derivative of price with respect to strike must be non-negative (negative butterfly spread indicates a violation)
+**Greeks**: analytical formulas match finite-difference estimates to within 0.0002 across 200 randomized (S, K, T, σ) trials.
 
-## Results
-SPY (spot: $740.57, 5 expiries Jul 2026 – Mar 2027):
+**VaR method comparison** (95%/99%, same portfolio and shock distribution):
 
-- 582 contracts analyzed
-- 0 calendar arbitrage violations
-- 200 butterfly arbitrage violations (largely noise from dense strike spacing and bid-ask spread)
-- Arbitrage-free rate: 65.6%
+| Method | 95% VaR error vs. Monte Carlo | 99% VaR error vs. Monte Carlo |
+|---|---|---|
+| Delta-Normal | -4.5% | -18.0% |
+| Delta-Gamma | -6.9% | -20.9% |
 
-VIX (spot: 17.60, 5 expiries Jul 2026 – Feb 2027):
+Both linear and quadratic approximations understate tail risk, and the understatement grows sharply at higher confidence - because they can't capture the excess kurtosis in a fat-tailed return distribution the way full Monte Carlo revaluation does.
 
-- 35 contracts analyzed
-- 3 calendar arbitrage violations — economically meaningful, driven by VIX options being priced off futures rather than spot VIX, causing total variance to decrease across nearby expiries
-- 2 butterfly arbitrage violations
-- Arbitrage-free rate: 85.7%
-- Near-term implied vols exceed 100%, reflecting the market pricing in vol-of-vol even during a low VIX regime
+**VaR backtesting**: the Kupiec test correctly fails to reject a well-calibrated model (10 breaches in 750 days vs. ~7.5 expected at 99%) and correctly rejects a deliberately mis-calibrated one (69 breaches, LR=188, p<0.001).
 
-## Takeaway
-SPY's surface is temporally consistent with no calendar violations, while VIX exhibits genuine calendar dislocations explained by its futures-based pricing structure. This highlights how standard no-arbitrage conditions behave differently when the underlying is itself a volatility index.
+**Live SVI calibration on real VIX options**: a snapshot taken with VIX spot at 14.54 across 5 expiries (Sept 2026 - Feb 2027, 26 usable contracts total) fits to an overall RMSE of 0.0034 - down from 0.024-0.101 after fixing the optimizer to use bounded differential evolution instead of an unconstrained search, which had been letting parameters collapse to degenerate values (ρ pinned at -1, σ at 0) on sparse data. VIX options typically have only 4-9 usable strikes per expiry against SVI's 5 free parameters, so every slice is flagged with an explicit low-data warning - a real, honest limitation of the instrument rather than something to paper over. The live arbitrage scan also found 2 butterfly violations out of 26 contracts (92.3% arbitrage-free), consistent with wide bid-ask spreads on thinly-traded strikes rather than a modeling bug.
+
+![Live VIX implied volatility surface](vol_surface.png)
+
+![SVI smile calibration on live VIX data: market IV vs. fitted curve](svi_calibration_live.png)
+
 ## Tools
-
 - Python
-- Black-Scholes (numerical IV extraction)
-- Matplotlib (vol surface visualization)
-- yfinance (options data)
+- NumPy
+- SciPy (optimization, root-finding, stats)
+- pandas
+- Matplotlib
+- yfinance
