@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
+from scipy.optimize import minimize, differential_evolution
 
 
 def svi_total_variance(k, a: float, b: float, rho: float, m: float, sigma: float):
@@ -64,34 +64,50 @@ def _constraints_ok(a, b, rho, m, sigma) -> bool:
     return a + b * sigma * np.sqrt(1 - rho ** 2) >= -1e-8
 
 
-def fit_svi_slice(k: np.ndarray, w: np.ndarray, T: float) -> SviFit:
-    """Fit one expiry's smile. Uses SLSQP with the constraints above,
-    penalizing constraint violation heavily rather than encoding it as a
-    hard scipy constraint (in practice, a soft penalty converges more
-    reliably from arbitrary starting points for this particular problem)."""
+def fit_svi_slice(k: np.ndarray, w: np.ndarray, T: float, seed: int = 0) -> SviFit:
+    """Fit one expiry's smile.
+
+    Uses differential evolution (a gradient-free global optimizer) rather
+    than a gradient-based method, because the penalty term that enforces
+    a + b*sigma*sqrt(1-rho^2) >= 0 creates a kink in the objective that
+    gradient-based optimizers (L-BFGS-B, Nelder-Mead from bad starting
+    points) can get stuck near - especially on sparse data where the
+    surface is poorly conditioned to begin with. Differential evolution
+    doesn't need gradients and searches the whole bounded box, then a
+    quick local L-BFGS-B polish tightens the final answer.
+
+    SVI has 5 parameters, so fewer than ~8 usable strikes makes the
+    problem under-determined - a warning is printed in that case, since
+    a technically-converged fit isn't the same as a *reliable* one.
+    """
+    if len(k) < 8:
+        print(f"  WARNING: T={T:.3f} has only {len(k)} usable strikes for a 5-parameter "
+              f"SVI fit - treat this slice's parameters as unreliable, even if RMSE looks low.")
+
+    w_max = max(w.max(), 1e-6)
+    bounds = [
+        (1e-8, 2 * w_max),        # a: total variance floor, can't exceed ~2x observed max
+        (1e-6, 5.0),              # b: slope/curvature magnitude
+        (-0.999, 0.999),          # rho: correlation-like, must stay strictly inside (-1, 1)
+        (k.min() - 0.5, k.max() + 0.5),  # m: smile center, kept near the observed strike range
+        (1e-3, 2.0),              # sigma: curvature width, kept away from 0
+    ]
 
     def objective(params):
         a, b, rho, m, sigma = params
-        penalty = 0.0
-        if b < 0:
-            penalty += 1e4 * b ** 2
-        if abs(rho) >= 1:
-            penalty += 1e4 * (abs(rho) - 0.999) ** 2
-        if sigma <= 0:
-            penalty += 1e4 * sigma ** 2
-        min_w = a + b * max(sigma, 1e-6) * np.sqrt(max(1 - rho ** 2, 0))
-        if min_w < 0:
-            penalty += 1e4 * min_w ** 2
+        min_w = a + b * sigma * np.sqrt(max(1 - rho ** 2, 0))
+        penalty = 1e4 * min_w ** 2 if min_w < 0 else 0.0
+        model_w = svi_total_variance(k, a, b, rho, m, sigma)
+        return np.sum((model_w - w) ** 2) + penalty
 
-        model_w = svi_total_variance(k, a, b, rho, m, max(sigma, 1e-6))
-        sse = np.sum((model_w - w) ** 2)
-        return sse + penalty
+    global_result = differential_evolution(
+        objective, bounds, seed=seed, maxiter=300, popsize=20, tol=1e-10, polish=False
+    )
+    local_result = minimize(objective, global_result.x, method="L-BFGS-B", bounds=bounds,
+                             options={"maxiter": 2000})
+    best = local_result if local_result.fun <= global_result.fun else global_result
 
-    x0 = _initial_guess(k, w)
-    result = minimize(objective, x0, method="Nelder-Mead",
-                       options={"maxiter": 5000, "xatol": 1e-8, "fatol": 1e-10})
-    a, b, rho, m, sigma = result.x
-    sigma = abs(sigma)
+    a, b, rho, m, sigma = best.x
 
     fitted_w = svi_total_variance(k, a, b, rho, m, sigma)
     fitted_iv = np.sqrt(np.maximum(fitted_w, 1e-10) / T)
