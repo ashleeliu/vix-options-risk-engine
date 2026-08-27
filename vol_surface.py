@@ -14,8 +14,7 @@ print(f"VIX spot price: {spot:.2f}")
 
 today = datetime.now()
 
-expiries = ['2026-07-22', '2026-10-21', '2026-11-18', '2026-07-15', '2027-02-17']
-
+expiries = ['2026-09-16', '2026-10-21', '2026-11-18', '2026-12-16', '2027-02-17']
 all_data = []
 
 for exp in expiries:
